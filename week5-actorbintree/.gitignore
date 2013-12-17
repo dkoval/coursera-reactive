@@ -1,0 +1,14 @@
+lib_managed
+project/project
+project/target
+submission
+target
+*.iml
+*.ipr
+*.iws
+.idea
+.idea_modules
+.DS_Store
+.classpath
+.project
+.settings
