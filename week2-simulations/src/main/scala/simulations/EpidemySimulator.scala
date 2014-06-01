@@ -24,7 +24,7 @@ class EpidemySimulator extends Simulator {
   import SimConfig._
 
   // to complete: construct list of persons
-  val persons: List[Person] = for (i <- (0 until population).toList) yield {
+  val persons: List[Person] = for (i <- List.range(0, population)) yield {
     val p = new Person(i)
     // TODO: think of a better strategy
     if (i < population * prevalenceRate)
@@ -47,10 +47,10 @@ class EpidemySimulator extends Simulator {
     // to complete with simulation logic
     //
     def setInfected() {
-      infected = true
-
       // Rule 4. When a person becomes infected, he does not immediately get sick,
       // but enters a phase of incubation in which he is infectious but not sick.
+      infected = true
+
       // Rule 5. After 6 days of becoming infected, a person becomes sick and is therefore visibly infectious.
       afterDelay(incubationTime) {
         sick = true
@@ -88,10 +88,10 @@ class EpidemySimulator extends Simulator {
       // Rule 1. A person moves to one of their neighbouring rooms (left, right, up, down)
       // within the next 5 days (with equally distributed probability).
       val moveDelay = randomBelow(5) + 1
-      afterDelay(moveDelay)(move())
+      afterDelay(moveDelay)(move)
     }
 
-    private def move() {
+    private def move {
       if (dead) {
         return
       }
@@ -100,7 +100,7 @@ class EpidemySimulator extends Simulator {
       // according to the transmissibility rate, unless the person is already infected or immune.
       if (!(infected || immune)) {
         val curRoom: (Int, Int) = (row, col)
-        if ((random < transRate) && isInfectedRoom(curRoom))
+        if (isInfectedRoom(curRoom) && (random < transRate))
           setInfected()
       }
 
@@ -109,8 +109,8 @@ class EpidemySimulator extends Simulator {
       val leftCol = (col - 1 + roomColumns) % roomColumns
       val rightCol = (col + 1) % roomColumns
 
-      // neighbour rooms
-      val neighborRooms = List(
+      // neighbouring rooms
+      val neighboringRooms = List(
         (upRow, col),
         (downRow, col),
         (row, leftCol),
@@ -121,9 +121,10 @@ class EpidemySimulator extends Simulator {
       // This means that if a person is surrounded by visibly infectious people, he does not change position;
       // however, he might change position the next time he tries to move
       // (for example, if a visibly infectious person moved out of one of the neighbouring rooms or became immune).
-      val healthyNeighborRooms = neighborRooms.filter(isHealthyRoom)
-      if (!healthyNeighborRooms.isEmpty) {
-        val nextRoom = healthyNeighborRooms(randomBelow(healthyNeighborRooms.length))
+      val healthyNeighboringRooms = neighboringRooms.filter(isHealthyRoom)
+      if (!healthyNeighboringRooms.isEmpty) {
+        val nextRoomIdx = randomBelow(healthyNeighboringRooms.length)
+        val nextRoom = healthyNeighboringRooms(nextRoomIdx)
         row = nextRoom._1
         col = nextRoom._2
       }
