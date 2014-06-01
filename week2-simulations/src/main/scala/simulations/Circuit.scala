@@ -84,12 +84,12 @@ abstract class CircuitSimulator extends Simulator {
       // The rest of the output signals are set to 0.
       // https://class.coursera.org/reactive-001/assignment/view?assignment_id=7
       case first :: rest => {
-        // Split the input into 2 parts: inLeft = (in & first), nRight = (in & not(first)),
+        // Split the input into 2 parts: inLeft = (in & first), inRight = (in & not(first)),
         // then recursively apply the demux() function to the left part of the input and
         // the remaining control signals. This will form the first n elements of the output.
         // Analogously, recursively call the demux() function on the right part of the output
-        // with the same set of control signals to compute the rest (n + 1 ... N - 1) elements
-        // of the output.
+        // with the same set of control signals to compute the rest (n + 1 ... N) elements
+        // of the output, where N = 2 ^ n.
         val inLeft, inRight, notFirst = new Wire
         // inLeft = (in & first)
         andGate(in, first, inLeft)
@@ -97,8 +97,9 @@ abstract class CircuitSimulator extends Simulator {
         inverter(first, notFirst); andGate(in, notFirst, inRight)
 
         val n = out.length / 2
-        demux(inLeft, rest, out.take(n))
-        demux(inRight, rest, out.drop(n))
+        val lrOuts: (List[Wire], List[Wire]) = out.splitAt(n)
+        demux(inLeft, rest, lrOuts._1)
+        demux(inRight, rest, lrOuts._2)
       }
     }
   }
