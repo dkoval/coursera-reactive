@@ -28,8 +28,6 @@ class Replicator(val replica: ActorRef) extends Actor {
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
 
-  var repeaters = Map.empty[Long, Cancellable]
-
   var _seqCounter = 0L
   def nextSeq = {
     val ret = _seqCounter
@@ -37,19 +35,19 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
+  var repeaters = Map.empty[Long, Cancellable]
+
   /* TODO Behavior for the Replicator. */
   def receive: Receive = LoggingReceive {
-    case replicate @ Replicate(key, valueOption, id) => {
+    case replicate @ Replicate(key, valueOption, id) =>
       val seq = nextSeq
       acks += seq -> (sender, replicate)
 
       val snapshotRepeater = context.system.scheduler.schedule(
         0 millis, 250 millis, replica, Snapshot(key, valueOption, seq))
-
       repeaters += seq -> snapshotRepeater
-    }
 
-    case SnapshotAck(key, seq) => {
+    case SnapshotAck(key, seq) =>
       if(acks.contains(seq)) {
         val (origSender, Replicate(key, _, id)) = acks(seq)
         acks -= seq
@@ -57,7 +55,5 @@ class Replicator(val replica: ActorRef) extends Actor {
         repeaters -= seq
         origSender ! Replicated(key, id)
       }
-    }
   }
-
 }
