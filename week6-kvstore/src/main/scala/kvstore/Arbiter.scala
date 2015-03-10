@@ -4,7 +4,6 @@ import akka.actor.{ActorRef, Actor}
 
 object Arbiter {
   case object Join
-
   case object JoinedPrimary
   case object JoinedSecondary
 
@@ -16,20 +15,17 @@ object Arbiter {
 
 class Arbiter extends Actor {
   import Arbiter._
+
   var leader: Option[ActorRef] = None
   var replicas = Set.empty[ActorRef]
 
   def receive = {
     case Join =>
+      replicas += sender
       if (leader.isEmpty) {
         leader = Some(sender)
-        replicas += sender
         sender ! JoinedPrimary
-      } else {
-        replicas += sender
-        sender ! JoinedSecondary
-      }
+      } else sender ! JoinedSecondary
       leader foreach (_ ! Replicas(replicas))
   }
-
 }
