@@ -12,16 +12,41 @@ object Replica {
     def key: String
     def id: Long
   }
+  /**
+   * Instructs the primary to insert the (key, value) pair into the storage and replicate it to the secondaries:
+   * id is a client-chosen unique identifier for this request.
+   */
   case class Insert(key: String, value: String, id: Long) extends Operation
+  /**
+   * Instructs the primary to remove the key (and its corresponding value) from the storage
+   * and then remove it from the secondaries.
+   */
   case class Remove(key: String, id: Long) extends Operation
+  /**
+   * Instructs the replica to look up the "current" value assigned with the key in the storage and reply with
+   * the stored value.
+   */
   case class Get(key: String, id: Long) extends Operation
 
   sealed trait OperationReply
+  /**
+   * A successful Insert or Remove results in a reply to the client in the form of an OperationAck(id) message
+   * where the id field matches the corresponding id field of the operation that has been acknowledged.
+   */
   case class OperationAck(id: Long) extends OperationReply
+  /**
+   * A failed Insert or Remove command results in an OperationFailed(id) reply.
+   * A failure is defined as the inability to confirm the operation within 1 second.
+   */
   case class OperationFailed(id: Long) extends OperationReply
+  /**
+   * A Get operation results in a GetResult(key, valueOption, id) message where the id field matches the value
+   * in the id field of the corresponding Get message. The valueOption field should contain None if the key is not present
+   * in the replica or Some(value) if a value is currently assigned to the given key in that replica.
+   */
   case class GetResult(key: String, valueOption: Option[String], id: Long) extends OperationReply
 
-  def props(arbiter: ActorRef, persistenceProps: Props): Props = Props[Replica](new Replica(arbiter, persistenceProps))
+  def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with ActorLogging {
@@ -40,7 +65,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
-  var persistence = context.actorOf(persistenceProps, "persistence")
+  val persistence = context.actorOf(persistenceProps, "persistence")
 
   var snapshotSeq = 0
   var persistAcks = Map.empty[Long, ActorRef]
@@ -49,7 +74,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
   var persistRepeaters = Map.empty[Long, Cancellable]
   var replicationFailureReporters = Map.empty[Long, Cancellable]
 
-  override def supervisorStrategy: SupervisorStrategy = OneForOneStrategy(maxNrOfRetries = 5, loggingEnabled = true) {
+  override val supervisorStrategy: SupervisorStrategy = OneForOneStrategy(maxNrOfRetries = 5, loggingEnabled = true) {
     case _: PersistenceException => SupervisorStrategy.Restart
   }
 
@@ -65,33 +90,29 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   /* TODO Behavior for  the leader role. */
   val leader: Receive = LoggingReceive {
-
-    case Get(key, id) => {
+    case Get(key, id) =>
       val valueOption = kv.get(key)
       sender ! GetResult(key, valueOption, id)
-    }
 
     // Whenever the primary replica receives an update operation (either Insert or Remove)
     // it must reply with an OperationAck(id) or OperationFailed(id) message, to be sent at most 1 second after
     // the update command was processed (the ActorSystem’s timer resolution is deemed to be sufficiently precise for this).
-
+    //
     // A positive OperationAck reply must be sent as soon as
     // - the change in question has been handed down to the Persistence module
     //   and a corresponding acknowledgement has been received from it
     // - replication of the change in question has been initiated
     //   and all of the secondary replicas have acknowledged the replication of the update.
 
-    case Insert(key, value, id) => {
+    case Insert(key, value, id) =>
       kv += key -> value
-      doReplicate(key, Some(value), id)
-    }
+      initiateReplication(key, Some(value), id)
 
-    case Remove(key, id) => {
+    case Remove(key, id) =>
       kv -= key
-      doReplicate(key, None, id)
-    }
+      initiateReplication(key, None, id)
 
-    case Persisted(key, id) => {
+    case Persisted(key, id) =>
       persistRepeaters(id).cancel()
       persistRepeaters -= id
 
@@ -103,18 +124,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
         replicationFailureReporters -= id
         origSender ! OperationAck(id)
       }
-    }
 
-    case Replicated(key, id) => {
+    case Replicated(key, id) =>
       if(replicateAcks.contains(id)) {
         val (origSender, currAckSet) = replicateAcks(id)
         val newAckSet = currAckSet - sender
 
-        if (newAckSet.isEmpty) {
-          replicateAcks -= id
-        } else {
-          replicateAcks = replicateAcks.updated(id, (origSender, newAckSet))
-        }
+        if (newAckSet.isEmpty) replicateAcks -= id
+        else replicateAcks = replicateAcks.updated(id, (origSender, newAckSet))
 
         if(!replicateAcks.contains(id) && !persistAcks.contains(id)) {
           replicationFailureReporters(id).cancel()
@@ -122,51 +139,51 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
           origSender ! OperationAck(id)
         }
       }
-    }
 
     // If replicas leave the cluster, which is signalled by sending a new Replicas message to the primary,
     // then outstanding acknowledgements of these replicas must be waived.
     // This can lead to the generation of an OperationAck triggered indirectly by the Replicas message.
 
-    case Replicas(replicas) => {
+    case Replicas(replicas) =>
       val secondaryReplicas = replicas.filterNot(_ == self)
       val removed = secondaries.keySet -- secondaryReplicas
       val added = secondaryReplicas -- secondaries.keySet
 
       var addedSecondaries = Map.empty[ActorRef, ActorRef]
-      val addedReplicators = added.map { replica =>
+      val addedReplicators = added map { replica =>
         val replicator = context.actorOf(Replicator.props(replica))
         addedSecondaries += replica -> replicator
         replicator
       }
 
-      removed foreach {replica => secondaries(replica) ! PoisonPill}
-      removed foreach {replica =>
+      removed foreach { replica =>
+        secondaries(replica) ! PoisonPill
+      }
+      removed foreach { replica =>
         replicateAcks.foreach { case (id, (origSender, rs)) =>
-          if (rs.contains(secondaries(replica))) {
-           self.tell(Replicated("", id), secondaries(replica))
-          }
+          if (rs.contains(secondaries(replica))) self.tell(Replicated("", id), secondaries(replica))
         }
       }
 
       replicators = replicators -- removed.map(secondaries) ++ addedReplicators
       secondaries = secondaries -- removed ++ addedSecondaries
 
-      addedReplicators.foreach { replicator =>
-        kv.zipWithIndex.foreach { case ((key, value), idx) =>
+      addedReplicators foreach { replicator =>
+        kv.zipWithIndex foreach { case ((key, value), idx) =>
           replicator ! Replicate(key, Some(value), idx)
         }
       }
-    }
   }
 
-  private def doReplicate(key: String, valueOption: Option[String], id: Long) = {
+  private def initiateReplication(key: String, valueOption: Option[String], id: Long) = {
     persistAcks += id -> sender
 
     if (replicators.nonEmpty) {
       replicateAcks += id -> (sender, replicators)
       // replicate Insert or Remove commands to the secondaries
-      replicators foreach {_ ! Replicate(key, valueOption, id)}
+      replicators foreach {
+        _ ! Replicate(key, valueOption, id)
+      }
     }
 
     persistRepeaters += id -> context.system.scheduler.schedule(
@@ -176,11 +193,11 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
     // A failed Insert or Remove command results in an OperationFailed(id) reply.
     // A failure is defined as the inability to confirm the operation within 1 second.
     replicationFailureReporters += id -> context.system.scheduler.scheduleOnce(1 second) {
-      onReplicationFailed(id)
+      reportReplicationFailure(id)
     }
   }
 
-  private def onReplicationFailed(id: Long) = {
+  private def reportReplicationFailure(id: Long) = {
       if(persistRepeaters.contains(id)) {
         persistRepeaters(id).cancel()
         persistRepeaters -= id
@@ -199,15 +216,11 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = LoggingReceive {
-
-    case Get(key, id) => {
+    case Get(key, id) =>
       sender ! GetResult(key, kv.get(key), id)
-    }
 
-    case Snapshot(key, valueOption, seq) => {
-      if(seq < snapshotSeq) {
-        sender ! SnapshotAck(key, seq)
-      }
+    case Snapshot(key, valueOption, seq) =>
+      if(seq < snapshotSeq) sender ! SnapshotAck(key, seq)
 
       if (seq == snapshotSeq) {
         valueOption match {
@@ -222,15 +235,12 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor with
           0 millis, 100 millis, persistence, Persist(key, valueOption, seq)
         )
       }
-    }
 
-    case Persisted(key, id) => {
+    case Persisted(key, id) =>
       val sender = persistAcks(id)
       persistAcks -= id
       persistRepeaters(id).cancel()
       persistRepeaters -= id
       sender ! SnapshotAck(key, id)
-    }
   }
-
 }
